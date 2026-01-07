@@ -1,15 +1,43 @@
 import streamlit as st
 import pandas as pd
 import json
+import re
 from io import StringIO
 
 st.set_page_config(page_title="Company Data Extractor", layout="wide")
 
 st.title("📊 Company Data Extractor")
-st.markdown("Upload a JSON or CSV file to extract company names and URLs")
+st.markdown("Upload a JSON or CSV file to extract company names and URLs from text content")
 
-# File uploader
-uploaded_file = st.file_uploader("Choose a file", type=['json', 'csv'])
+def extract_urls_from_text(text):
+    """Extract URLs from text content"""
+    if pd.isna(text) or not isinstance(text, str):
+        return []
+    
+    # Pattern to match URLs (http/https and common domains without protocol)
+    url_pattern = r'(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?(?:/[^\s]*)?)'
+    
+    urls = re.findall(url_pattern, text)
+    
+    # Clean and filter URLs
+    cleaned_urls = []
+    exclude_domains = ['upwork.com', 'example.com', 'google.com', 'facebook.com', 'twitter.com', 'linkedin.com']
+    
+    for url in urls:
+        # Remove trailing punctuation
+        url = re.sub(r'[.,;:)\]]+$', '', url)
+        
+        # Skip if it's an excluded domain
+        if any(domain in url.lower() for domain in exclude_domains):
+            continue
+        
+        # Add protocol if missing
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        cleaned_urls.append(url)
+    
+    return list(set(cleaned_urls))  # Remove duplicates
 
 def find_matching_columns(columns, keywords):
     """Find columns that match given keywords (case-insensitive)"""
@@ -34,7 +62,6 @@ def parse_file(file):
             if isinstance(data, list):
                 df = pd.DataFrame(data)
             elif isinstance(data, dict):
-                # If it's a dict, try to find the main data array
                 if len(data) == 1:
                     df = pd.DataFrame(list(data.values())[0])
                 else:
@@ -48,18 +75,21 @@ def parse_file(file):
         st.error(f"Error parsing file: {str(e)}")
         return None
 
+# File uploader
+uploaded_file = st.file_uploader("Choose a file", type=['json', 'csv'])
+
 if uploaded_file is not None:
     df = parse_file(uploaded_file)
     
     if df is not None and not df.empty:
         st.success(f"✅ File uploaded successfully! Found {len(df)} rows and {len(df.columns)} columns.")
         
-        # Try to automatically find company name and URL columns
+        # Auto-detect columns
         company_keywords = ['company', 'name', 'business', 'organization', 'org', 'title']
-        url_keywords = ['url', 'website', 'link', 'site', 'web', 'joburl']
+        text_keywords = ['description', 'content', 'text', 'body', 'details']
         
         auto_company_col = find_matching_columns(df.columns, company_keywords)
-        auto_url_col = find_matching_columns(df.columns, url_keywords)
+        auto_text_col = find_matching_columns(df.columns, text_keywords)
         
         # Column selection section
         st.subheader("📋 Column Selection")
@@ -71,19 +101,30 @@ if uploaded_file is not None:
                 "Select Company Name Column",
                 options=['None'] + list(df.columns),
                 index=list(['None'] + list(df.columns)).index(auto_company_col) if auto_company_col else 0,
-                key='company_selector'
+                key='company_selector',
+                help="Column containing company/job titles"
             )
         
         with col2:
-            url_col = st.selectbox(
-                "Select URL/Website Column",
+            text_col = st.selectbox(
+                "Select Text Column (for URL extraction)",
                 options=['None'] + list(df.columns),
-                index=list(['None'] + list(df.columns)).index(auto_url_col) if auto_url_col else 0,
-                key='url_selector'
+                index=list(['None'] + list(df.columns)).index(auto_text_col) if auto_text_col else 0,
+                key='text_selector',
+                help="Column containing descriptions or text with URLs"
             )
         
+        # Option to extract URLs from text
+        st.subheader("🔍 URL Extraction Options")
+        
+        extract_from_text = st.checkbox(
+            "Extract URLs from text content",
+            value=True,
+            help="Automatically extract company websites mentioned in descriptions"
+        )
+        
         # Extract and display results
-        if company_col != 'None' or url_col != 'None':
+        if company_col != 'None' or text_col != 'None':
             st.subheader("✨ Extracted Data")
             
             # Create result dataframe
@@ -92,36 +133,36 @@ if uploaded_file is not None:
             if company_col != 'None':
                 result_data['Company Name'] = df[company_col]
             
-            if url_col != 'None':
-                result_data['URL'] = df[url_col]
+            # Extract URLs from text if enabled
+            if extract_from_text and text_col != 'None':
+                with st.spinner('Extracting URLs from text...'):
+                    extracted_urls = df[text_col].apply(extract_urls_from_text)
+                    result_data['Extracted URLs'] = extracted_urls.apply(lambda x: ', '.join(x) if x else '')
             
             result_df = pd.DataFrame(result_data)
             
-            # Remove rows where all values are NaN
+            # Remove rows where all values are empty
+            result_df = result_df.replace('', pd.NA)
             result_df = result_df.dropna(how='all')
-            
-            # Remove duplicate rows
-            result_df = result_df.drop_duplicates()
             
             # Display summary metrics
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
                 st.metric("Total Records", len(result_df))
             with col_m2:
-                st.metric("Unique Entries", len(result_df))
+                if 'Extracted URLs' in result_df.columns:
+                    records_with_urls = (result_df['Extracted URLs'].notna() & (result_df['Extracted URLs'] != '')).sum()
+                    st.metric("Records with URLs", records_with_urls)
             with col_m3:
-                if 'URL' in result_df.columns:
-                    valid_urls = result_df['URL'].notna().sum()
-                    st.metric("Valid URLs", valid_urls)
+                if 'Extracted URLs' in result_df.columns:
+                    total_urls = result_df['Extracted URLs'].str.split(', ').apply(lambda x: len([i for i in x if i])).sum()
+                    st.metric("Total URLs Found", int(total_urls))
             
-            # Display table with better formatting
+            # Display table
             st.dataframe(
                 result_df, 
                 use_container_width=True, 
-                height=400,
-                column_config={
-                    "URL": st.column_config.LinkColumn("URL"),
-                }
+                height=400
             )
             
             # Download section
@@ -143,6 +184,19 @@ if uploaded_file is not None:
             
             with col_d2:
                 st.info(f"Ready to download {len(result_df)} records")
+            
+            # Show sample of extracted URLs
+            if 'Extracted URLs' in result_df.columns:
+                with st.expander("🔗 Sample Extracted URLs"):
+                    sample_urls = result_df[result_df['Extracted URLs'].notna() & (result_df['Extracted URLs'] != '')].head(10)
+                    if not sample_urls.empty:
+                        for idx, row in sample_urls.iterrows():
+                            st.write(f"**{row.get('Company Name', 'N/A')}**")
+                            urls = [u.strip() for u in str(row['Extracted URLs']).split(',') if u.strip()]
+                            for url in urls:
+                                st.write(f"  • {url}")
+                    else:
+                        st.write("No URLs found in the selected text column")
         
         else:
             st.warning("⚠️ Please select at least one column to display.")
@@ -159,47 +213,41 @@ else:
     st.info("👆 Please upload a JSON or CSV file to get started.")
     
     # Sample data format info
-    with st.expander("ℹ️ Supported File Formats & Examples"):
+    with st.expander("ℹ️ How URL Extraction Works"):
         st.markdown("""
-        ### CSV Example:
+        ### Automatic URL Extraction
+        
+        This app can **automatically extract company websites** mentioned in text content like job descriptions.
+        
+        **Example:**
+        If your data contains:
         ```
-        Company Name,URL,Other Info
-        Acme Corp,https://acme.com,Info
-        Tech Inc,https://techinc.com,Info
+        "We at http://veliovgroup.com specialize in technical SEO..."
         ```
         
-        ### JSON Example (Array of Objects):
-        ```json
-        [
-            {
-                "title": "Job Title",
-                "jobUrl": "https://example.com/job1"
-            },
-            {
-                "title": "Another Job",
-                "jobUrl": "https://example.com/job2"
-            }
-        ]
-        ```
-        
-        ### JSON Example (Nested Object):
-        ```json
-        {
-            "data": [
-                {"company": "Acme Corp", "website": "https://acme.com"},
-                {"company": "Tech Inc", "website": "https://techinc.com"}
-            ]
-        }
-        ```
+        The app will extract: `https://veliovgroup.com`
         
         ---
         
-        **Automatic Column Detection:**
-        - **Company Name**: Looks for columns containing "company", "name", "business", "title", "organization"
-        - **URL**: Looks for columns containing "url", "website", "link", "site", "web", "joburl"
+        ### Features:
+        - ✅ Extracts URLs from any text field (descriptions, content, etc.)
+        - ✅ Automatically adds `https://` if missing
+        - ✅ Filters out common platforms (Upwork, Facebook, LinkedIn, etc.)
+        - ✅ Removes duplicate URLs
+        - ✅ Handles both `http://` and `https://` URLs
         
-        If automatic detection doesn't work, you can manually select the correct columns from the dropdown menus.
+        ---
+        
+        ### Supported Formats:
+        - **CSV files** with company names and descriptions
+        - **JSON files** with arrays of objects containing text fields
+        
+        ### Column Detection:
+        - **Company Name**: Looks for "company", "name", "title", "business"
+        - **Text Content**: Looks for "description", "content", "text", "details"
+        
+        You can always manually select different columns if auto-detection doesn't work.
         """)
 
 st.markdown("---")
-st.markdown("Built with Streamlit | 🚀 Upload • 🔍 Extract • 💾 Download")
+st.markdown("Built with Streamlit | 🚀 Upload • 🔍 Extract URLs • 💾 Download")
