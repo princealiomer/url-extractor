@@ -10,12 +10,18 @@ st.set_page_config(page_title="Company Data Extractor", layout="wide")
 @st.cache_resource
 def load_nlp_model():
     try:
-        return spacy.load("en_core_web_sm")
-    except OSError:
-        st.warning("Downloading language model...")
-        from spacy.cli import download
-        download("en_core_web_sm")
-        return spacy.load("en_core_web_sm")
+        # Try loading as a module first (standard for requirements.txt install)
+        import en_core_web_sm
+        return en_core_web_sm.load()
+    except ImportError:
+        # Fallback for local dev if not installed as module
+        try:
+            return spacy.load("en_core_web_sm")
+        except OSError:
+            st.warning("Downloading language model via spacy.cli...")
+            from spacy.cli import download
+            download("en_core_web_sm")
+            return spacy.load("en_core_web_sm")
 
 nlp = load_nlp_model()
 
