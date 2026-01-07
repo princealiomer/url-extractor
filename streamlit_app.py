@@ -7,7 +7,7 @@ from io import StringIO
 st.set_page_config(page_title="Company Data Extractor", layout="wide")
 
 st.title("📊 Company Data Extractor")
-st.markdown("Upload a JSON or CSV file to extract company names and URLs from text content")
+st.markdown("Upload a JSON or CSV file to extract job titles and URLs from text content")
 
 def extract_urls_from_text(text):
     """Extract URLs from text content"""
@@ -98,7 +98,7 @@ if uploaded_file is not None:
         
         with col1:
             company_col = st.selectbox(
-                "Select Company Name Column",
+                "Select Job Title Column",
                 options=['None'] + list(df.columns),
                 index=list(['None'] + list(df.columns)).index(auto_company_col) if auto_company_col else 0,
                 key='company_selector',
@@ -131,7 +131,7 @@ if uploaded_file is not None:
             result_data = {}
             
             if company_col != 'None':
-                result_data['Company Name'] = df[company_col]
+                result_data['Job Title'] = df[company_col]
             
             # Extract URLs from text if enabled
             if extract_from_text and text_col != 'None':
@@ -191,7 +191,7 @@ if uploaded_file is not None:
                     sample_urls = result_df[result_df['Extracted URLs'].notna() & (result_df['Extracted URLs'] != '')].head(10)
                     if not sample_urls.empty:
                         for idx, row in sample_urls.iterrows():
-                            st.write(f"**{row.get('Company Name', 'N/A')}**")
+                            st.write(f"**{row.get('Job Title', 'N/A')}**")
                             urls = [u.strip() for u in str(row['Extracted URLs']).split(',') if u.strip()]
                             for url in urls:
                                 st.write(f"  • {url}")
@@ -243,7 +243,7 @@ else:
         - **JSON files** with arrays of objects containing text fields
         
         ### Column Detection:
-        - **Company Name**: Looks for "company", "name", "title", "business"
+        - **Job Title**: Looks for "company", "name", "title", "business"
         - **Text Content**: Looks for "description", "content", "text", "details"
         
         You can always manually select different columns if auto-detection doesn't work.
