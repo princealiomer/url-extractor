@@ -27,8 +27,8 @@ def extract_urls_from_text(text):
         # Remove trailing punctuation
         url = re.sub(r'[.,;:)\]]+$', '', url)
         
-        # Skip if it's an excluded domain
-        if any(domain in url.lower() for domain in exclude_domains):
+        # Skip if it's an excluded domain or robots.txt
+        if any(domain in url.lower() for domain in exclude_domains) or 'robots.txt' in url.lower():
             continue
         
         # Add protocol if missing
