@@ -155,7 +155,7 @@ if uploaded_file is not None:
                     st.metric("Records with URLs", records_with_urls)
             with col_m3:
                 if 'Extracted URLs' in result_df.columns:
-                    total_urls = result_df['Extracted URLs'].str.split(', ').apply(lambda x: len([i for i in x if i])).sum()
+                    total_urls = result_df['Extracted URLs'].str.split(', ').apply(lambda x: len([i for i in x if i]) if isinstance(x, list) else 0).sum()
                     st.metric("Total URLs Found", int(total_urls))
             
             # Display table
