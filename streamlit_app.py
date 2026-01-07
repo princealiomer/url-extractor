@@ -2,12 +2,25 @@ import streamlit as st
 import pandas as pd
 import json
 import re
+import spacy
 from io import StringIO
 
 st.set_page_config(page_title="Company Data Extractor", layout="wide")
 
+@st.cache_resource
+def load_nlp_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        st.warning("Downloading language model...")
+        from spacy.cli import download
+        download("en_core_web_sm")
+        return spacy.load("en_core_web_sm")
+
+nlp = load_nlp_model()
+
 st.title("📊 Company Data Extractor")
-st.markdown("Upload a JSON or CSV file to extract job titles and URLs from text content")
+st.markdown("Upload a JSON or CSV file to extract job titles, company names, and URLs from text content")
 
 def extract_urls_from_text(text):
     """Extract URLs from text content"""
@@ -38,6 +51,18 @@ def extract_urls_from_text(text):
         cleaned_urls.append(url)
     
     return list(set(cleaned_urls))  # Remove duplicates
+
+def extract_companies_from_text(text):
+    """Extract Organizations from text using spaCy"""
+    if pd.isna(text) or not isinstance(text, str):
+        return []
+    
+    doc = nlp(text)
+    # Filter for entities labeled as ORG (Organization)
+    companies = [ent.text for ent in doc.ents if ent.label_ == "ORG"]
+    
+    # Basic cleaning: remove duplicates and very short names
+    return list(set([c for c in companies if len(c) > 2]))
 
 def find_matching_columns(columns, keywords):
     """Find columns that match given keywords (case-insensitive)"""
@@ -107,21 +132,29 @@ if uploaded_file is not None:
         
         with col2:
             text_col = st.selectbox(
-                "Select Text Column (for URL extraction)",
+                "Select Text Column (for URL & Entity extraction)",
                 options=['None'] + list(df.columns),
                 index=list(['None'] + list(df.columns)).index(auto_text_col) if auto_text_col else 0,
                 key='text_selector',
                 help="Column containing descriptions or text with URLs"
             )
         
-        # Option to extract URLs from text
-        st.subheader("🔍 URL Extraction Options")
+        # Options
+        st.subheader("🔍 Extraction Options")
         
-        extract_from_text = st.checkbox(
-            "Extract URLs from text content",
-            value=True,
-            help="Automatically extract company websites mentioned in descriptions"
-        )
+        col_opt1, col_opt2 = st.columns(2)
+        with col_opt1:
+            extract_from_text = st.checkbox(
+                "Extract URLs from text content",
+                value=True,
+                help="Automatically extract company websites mentioned in descriptions"
+            )
+        with col_opt2:
+            extract_companies = st.checkbox(
+                "Extract Company Names (NLP) from text",
+                value=False,
+                help="Use AI/NLP to find organization names in the description. Can be slow for large files."
+            )
         
         # Extract and display results
         if company_col != 'None' or text_col != 'None':
@@ -136,12 +169,19 @@ if uploaded_file is not None:
             # Extract URLs from text if enabled
             if extract_from_text and text_col != 'None':
                 with st.spinner('Extracting URLs from text...'):
+                    # Fix: Handle empty list splits or NA gracefully
                     extracted_urls = df[text_col].apply(extract_urls_from_text)
                     result_data['Extracted URLs'] = extracted_urls.apply(lambda x: ', '.join(x) if x else '')
             
+            # Extract Companies from text if enabled
+            if extract_companies and text_col != 'None':
+                with st.spinner('Analyzing text for Company Names using NLP... (this may take a moment)'):
+                    extracted_orgs = df[text_col].apply(extract_companies_from_text)
+                    result_data['Extracted Companies (NLP)'] = extracted_orgs.apply(lambda x: ', '.join(x) if x else '')
+
             result_df = pd.DataFrame(result_data)
             
-            # Remove rows where all values are empty
+            # Remove rows where all values are empty or NA
             result_df = result_df.replace('', pd.NA)
             result_df = result_df.dropna(how='all')
             
@@ -154,6 +194,7 @@ if uploaded_file is not None:
                     records_with_urls = (result_df['Extracted URLs'].notna() & (result_df['Extracted URLs'] != '')).sum()
                     st.metric("Records with URLs", records_with_urls)
             with col_m3:
+                # Use robust counting logic
                 if 'Extracted URLs' in result_df.columns:
                     total_urls = result_df['Extracted URLs'].str.split(', ').apply(lambda x: len([i for i in x if i]) if isinstance(x, list) else 0).sum()
                     st.metric("Total URLs Found", int(total_urls))
@@ -185,18 +226,39 @@ if uploaded_file is not None:
             with col_d2:
                 st.info(f"Ready to download {len(result_df)} records")
             
-            # Show sample of extracted URLs
-            if 'Extracted URLs' in result_df.columns:
-                with st.expander("🔗 Sample Extracted URLs"):
-                    sample_urls = result_df[result_df['Extracted URLs'].notna() & (result_df['Extracted URLs'] != '')].head(10)
-                    if not sample_urls.empty:
-                        for idx, row in sample_urls.iterrows():
-                            st.write(f"**{row.get('Job Title', 'N/A')}**")
-                            urls = [u.strip() for u in str(row['Extracted URLs']).split(',') if u.strip()]
-                            for url in urls:
-                                st.write(f"  • {url}")
+            # Show sample of extracted data
+            if 'Extracted URLs' in result_df.columns or 'Extracted Companies (NLP)' in result_df.columns:
+                with st.expander("🔗 Sample Extracted Data"):
+                    # Show first 10 rows that have *something* extracted
+                    if 'Extracted Companies (NLP)' in result_df.columns:
+                        mask = (result_df['Extracted URLs'].notna() | result_df['Extracted Companies (NLP)'].notna())
                     else:
-                        st.write("No URLs found in the selected text column")
+                        mask = result_df['Extracted URLs'].notna()
+
+                    sample_data = result_df[mask].head(10)
+                    
+                    if not sample_data.empty:
+                        for idx, row in sample_data.iterrows():
+                            # Show Job Title
+                            title = row.get('Job Title', 'N/A')
+                            st.markdown(f"**Job**: {title}")
+                            
+                            # Show URLs
+                            if 'Extracted URLs' in row and not pd.isna(row['Extracted URLs']):
+                                urls = [u.strip() for u in str(row['Extracted URLs']).split(',') if u.strip()]
+                                if urls:
+                                    st.write(f"  • URLs: {', '.join(urls)}")
+                            
+                            # Show Companies
+                            if 'Extracted Companies (NLP)' in row and not pd.isna(row['Extracted Companies (NLP)']):
+                                orgs = [o.strip() for o in str(row['Extracted Companies (NLP)']).split(',') if o.strip()]
+                                if orgs:
+                                    st.write(f"  • Companies (NLP): {', '.join(orgs)}")
+                            
+                            st.write("---")
+
+                    else:
+                        st.write("No extracted data found in the selected text column.")
         
         else:
             st.warning("⚠️ Please select at least one column to display.")
@@ -212,42 +274,25 @@ if uploaded_file is not None:
 else:
     st.info("👆 Please upload a JSON or CSV file to get started.")
     
-    # Sample data format info
-    with st.expander("ℹ️ How URL Extraction Works"):
+    with st.expander("ℹ️ How Extraction Works"):
         st.markdown("""
-        ### Automatic URL Extraction
+        ### Features
         
-        This app can **automatically extract company websites** mentioned in text content like job descriptions.
+        1. **URL Extraction**: 
+           - Regex-based. 
+           - Filters spam domains and invalid formats.
+           - Ignores `robots.txt` paths.
         
-        **Example:**
-        If your data contains:
-        ```
-        "We at http://veliovgroup.com specialize in technical SEO..."
-        ```
+        2. **Company Name Extraction (NLP)**:
+           - Uses **spaCy (en_core_web_sm)** model.
+           - Identifies Named Entities labeled as **ORG** (Organization).
+           - This is experimental and probabilistic.
         
-        The app will extract: `https://veliovgroup.com`
-        
-        ---
-        
-        ### Features:
-        - ✅ Extracts URLs from any text field (descriptions, content, etc.)
-        - ✅ Automatically adds `https://` if missing
-        - ✅ Filters out common platforms (Upwork, Facebook, LinkedIn, etc.)
-        - ✅ Removes duplicate URLs
-        - ✅ Handles both `http://` and `https://` URLs
-        
-        ---
-        
-        ### Supported Formats:
-        - **CSV files** with company names and descriptions
-        - **JSON files** with arrays of objects containing text fields
-        
-        ### Column Detection:
-        - **Job Title**: Looks for "company", "name", "title", "business"
-        - **Text Content**: Looks for "description", "content", "text", "details"
-        
-        You can always manually select different columns if auto-detection doesn't work.
+        ### Tips
+        - **NLP** extraction can be resource-intensive. Use it on smaller datasets or be patient with larger ones.
+        - **Job Title** selection maps to the main identification column.
+        - **Text Column** is the source for both URL and Company Name extraction.
         """)
 
 st.markdown("---")
-st.markdown("Built with Streamlit | 🚀 Upload • 🔍 Extract URLs • 💾 Download")
+st.markdown("Built with Streamlit & spaCy | 🚀 Upload • 🔍 Extract • 💾 Download")
